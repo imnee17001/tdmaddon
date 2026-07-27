@@ -1,10 +1,11 @@
 # ACE Indicator
 
-**All Cards Engine** — a compact, multi-mode Home Assistant Lovelace card.
+**All Cards Engine** — A compact, multi-mode Lovelace card for Home Assistant.
 
-One card, four modes, four themes. Built for dashboards that need dense status at a glance: printers, batteries, MFA codes, prices, sensors, and history sparklines.
+One card · Four modes · Four themes  
+Built for dense status displays: printers, batteries, MFA, prices, sensors, and history sparklines.
 
-![ACE modes](https://img.shields.io/badge/modes-Display%20%7C%20Thresholds%20%7C%20Boolean%20%7C%20Graph-blue)
+![Modes](https://img.shields.io/badge/modes-Display%20%7C%20Thresholds%20%7C%20Boolean%20%7C%20Graph-blue)
 ![Themes](https://img.shields.io/badge/themes-Default%20%7C%20Outline%20%7C%20Soft%20%7C%20Minimal-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom%20Repository-orange)
 
@@ -12,65 +13,51 @@ One card, four modes, four themes. Built for dashboards that need dense status a
 
 ## Features
 
-| Mode | What it does |
-|------|----------------|
-| **Display** | Single entity, value + unit, custom color (simplest) |
-| **Thresholds** | Lowest numeric value among entities → color/label by ordered thresholds |
-| **Boolean** | Per-entity conditions with AND/OR logic, true/false colors & labels |
-| **Graph** | Multi-series history sparkline with grid, legend, 12h/24h time |
+| Mode | Description |
+|------|-------------|
+| **Display** | Single entity with value + unit and custom color |
+| **Thresholds** | Lowest numeric value mapped to color/label thresholds |
+| **Boolean** | Per-entity conditions with AND/OR logic |
+| **Graph** | Multi-series history sparkline with legend |
 
-**Themes:** Default (solid) · Outline · Soft (pastel) · Minimal  
+**Themes:** `default` · `outline` · `soft` · `minimal`
 
-Also includes:
-
-- Configurable icon, name, alignment (left/center/right)
-- Icon size, name size, value size
-- Currency units (`$`, `€`, …) shown on the left
-- Graph fills section width and redraws on resize
-- Clean UI editor with fixed-width entity rows
+Additional features:
+- Configurable icon, name, and alignment
+- Adjustable icon / name / value sizes
+- Currency symbol support
+- Responsive graph that fills section width
+- Clean visual editor
 
 ---
 
-## HACS install (custom repository)
+## Installation
 
-1. Open **HACS → Frontend**
-2. ⋮ menu → **Custom repositories**
-3. Repository URL: `https://github.com/imnee17001/tdmaddon`
+### HACS (Recommended)
+
+1. Go to **HACS → Frontend**
+2. Click the three dots (⋮) → **Custom repositories**
+3. Add repository:  
+   `https://github.com/imnee17001/tdmaddon`
 4. Category: **Lovelace**
-5. **Add** → find **ACE Indicator** → **Download**
-6. Restart Home Assistant (or at least clear frontend cache)
-7. Add the resource if HACS did not (see below)
+5. Click **Add**, then find **ACE Indicator** and click **Download**
+6. Restart Home Assistant (or hard-refresh the browser)
 
-### Manual resource (if needed)
+### Manual Installation
 
-**Settings → Dashboards → Resources → Add resource**
-
-| Field | Value |
-|-------|--------|
-| URL | `/hacsfiles/ace-indicator/ace-indicator.js` |
-| Type | **JavaScript Module** |
-
-*(Path may vary slightly by HACS version; HACS usually registers this for you.)*
+1. Download `ace-indicator.js` from this repository
+2. Place it in:
+/config/www/ace-indicator/ace-indicator.js
+text3. Add a Lovelace resource:
+- URL: `/local/ace-indicator/ace-indicator.js`
+- Type: **JavaScript Module**
+4. Hard-refresh your browser (`Ctrl + Shift + R`)
 
 ---
 
-## Manual install
+## Configuration Examples
 
-1. Copy `ace-indicator.js` to:
-   ```
-   /config/www/ace-indicator/ace-indicator.js
-   ```
-2. **Settings → Dashboards → Resources → Add resource**
-   - URL: `/local/ace-indicator/ace-indicator.js`
-   - Type: **JavaScript Module**
-3. Hard-refresh the browser (Ctrl+Shift+R)
-
----
-
-## Minimal examples
-
-### Display
-
+### Display Mode
 ```yaml
 type: custom:ace-indicator
 mode: display
@@ -78,14 +65,10 @@ name: Battery
 icon: mdi:battery
 theme: soft
 entities:
-  - entity: sensor.phone_battery
+- entity: sensor.phone_battery
 display_color: "#4caf50"
-```
-
-### Thresholds
-
-```yaml
-type: custom:ace-indicator
+Thresholds Mode
+YAMLtype: custom:ace-indicator
 mode: thresholds
 name: Toner
 icon: mdi:printer
@@ -103,12 +86,8 @@ thresholds:
   - max: 100
     color: "#4caf50"
     label: OK
-```
-
-### Boolean
-
-```yaml
-type: custom:ace-indicator
+Boolean Mode
+YAMLtype: custom:ace-indicator
 mode: boolean
 name: Alerts
 logic: or
@@ -123,64 +102,51 @@ entities:
   - entity: binary_sensor.smoke
     condition: "=="
     value: "on"
-```
-
-### Graph
-
-```yaml
-type: custom:ace-indicator
+Graph Mode
+YAMLtype: custom:ace-indicator
 mode: graph
-name: My BTC Stash
+name: BTC Stash
 icon: mdi:chart-line
 theme: default
 height: 200
 hours_to_show: 24
 time_format: "12h"
-graph_type: sparkline
 entities:
   - entity: sensor.cryptoinfo_main_btc_stash
     color: "#ff9800"
-```
 
----
 
-## Options (summary)
+## Options Summary
 
-| Option | Default | Notes |
-|--------|---------|--------|
-| `mode` | `display` | `display` \| `thresholds` \| `boolean` \| `graph` |
-| `theme` | `default` | `default` \| `outline` \| `soft` \| `minimal` |
-| `align` | `center` | `left` \| `center` \| `right` |
-| `name` | | Indicator display text |
-| `icon` | `mdi:circle` | Use `none` to hide |
-| `height` | `36` | px (graph: plot height driver) |
-| `width` | `140` | px (non-graph; graph fills section) |
-| `icon_size` | `18` | px |
-| `name_size` | `12` | px |
-| `value_size` | `14` | px |
-| `show_value` | `true` | |
-| `entities` | | List of `{ entity, color?, condition?, value? }` |
-| `thresholds` | | List of `{ max, color, label }` |
-| `hours_to_show` | `24` | Graph only |
-| `time_format` | `24h` | `12h` \| `24h` |
-| `graph_type` | `sparkline` | `sparkline` \| `line` |
+| Option            | Default     | Description                                      |
+|-------------------|-------------|--------------------------------------------------|
+| `mode`            | `display`   | `display` \| `thresholds` \| `boolean` \| `graph` |
+| `theme`           | `default`   | `default` \| `outline` \| `soft` \| `minimal`    |
+| `align`           | `center`    | `left` \| `center` \| `right`                    |
+| `name`            |             | Display name                                     |
+| `icon`            | `mdi:circle`| Icon (use `none` to hide)                        |
+| `height`          | `36`        | Height in px                                     |
+| `width`           | `140`       | Width in px (non-graph modes)                    |
+| `icon_size`       | `18`        | Icon size in px                                  |
+| `name_size`       | `12`        | Name text size                                   |
+| `value_size`      | `14`        | Value text size                                  |
+| `show_value`      | `true`      | Show numeric value                               |
+| `entities`        |             | List of entities                                 |
+| `thresholds`      |             | Threshold definitions                            |
+| `hours_to_show`   | `24`        | Graph history length                             |
+| `time_format`     | `24h`       | `12h` or `24h`                                   |
+| `graph_type`      | `sparkline` | `sparkline` or `line`                            |
 
----
 
-## Layout tip
+Layout Tips
 
-Graph mode **fills the section width**. Set columns in the card’s **Layout** tab so the edit overlay and size match what you want.
+Graph mode fills the available section width. Adjust the card’s Layout columns to control its size.
+Other modes respect the configured width (in pixels). Set the Layout width appropriately so the card does not get clipped.
 
-Non-graph modes use the configured **Width (px)**; give the card enough layout columns or it may shrink.
 
----
+Version
+1.5.0 — Initial public release under the ACE Indicator name.
 
-## Version
-
-**1.5.0** — ACE rename + HACS packaging baseline.
-
----
-
-## License
-
+License
 MIT
+textJust replace the current content of `README.md` in your repository with the text above.
