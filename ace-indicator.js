@@ -300,6 +300,25 @@ class AceIndicator extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
 
+
+    // ===== PREVIEW MODE (card picker thumbnail) =====
+    // Shows the advertisement image instead of "Unavailable"
+    if (this.preview) {
+      this.shadowRoot.innerHTML = `
+        <ha-card style="overflow:hidden; border-radius:12px; margin:0; box-shadow:none; background:transparent;">
+          <img
+            src="https://raw.githubusercontent.com/imnee17001/tdmaddon/main/All%20Cards%20Engine.jpg"
+            alt="ACE – All Cards Engine"
+            style="width:100%; height:auto; display:block; object-fit:cover;"
+          />
+        </ha-card>
+      `;
+      return;
+    }
+    // ===== END PREVIEW MODE =====
+
+
+
     try {
       const cfg = this._config || {};
       const height = Math.max(24, Number(cfg.height) || 36);
