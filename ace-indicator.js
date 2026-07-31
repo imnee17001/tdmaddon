@@ -281,14 +281,14 @@ static getStubConfig() {
     if (!this.shadowRoot) return;
 
 
-      // Show the advertisement image ONLY in the pure “By card” grid.
-    // Detect the configuration dialog so we never show the logo there.
-    const inEditor =
-      !!this.closest?.("hui-dialog-edit-card") ||
-      !!this.closest?.(".element-preview") ||
-      !!this.closest?.("ha-dialog");
-
-    if (this._config?._preview && !inEditor) {
+    // Show the advertisement image ONLY for the pure stub that the
+    // “By card” grid uses. As soon as the user changes anything in the
+    // editor (especially the Mode), the real card layout appears.
+    if (
+      this._config?._preview &&
+      this._config.mode === "display" &&
+      this._config.name === "ACE – All Cards Engine"
+    ) {
       this.shadowRoot.innerHTML = `
         <ha-card style="
           overflow: hidden;
