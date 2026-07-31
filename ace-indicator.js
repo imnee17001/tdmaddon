@@ -332,18 +332,25 @@ static getStubConfig() {
 
   /* -------------------- Rendering -------------------- */
   _render() {
-    if (!this.shadowRoot) return;
+ 
+    // Walk up the composed tree (crosses Shadow DOM) to detect the editor dialog
+    let node = this;
+    let inEditor = false;
+    while (node) {
+      if (
+        node.localName === "hui-dialog-edit-card" ||
+        (node.classList && node.classList.contains("element-preview")) ||
+        node.localName === "ha-dialog"
+      ) {
+        inEditor = true;
+        break;
+      }
+      // Cross the shadow boundary
+      node = node.getRootNode?.()?.host || node.parentElement;
+    }
 
-
-  // Show the ad image ONLY while the pure stub is still completely untouched.
-    // Changing Mode, Name, Height or Width will immediately show the real card.
-    if (
-      this._config?._preview &&
-      this._config.mode === "display" &&
-      this._config.name === "ACE – All Cards Engine" &&
-      this._config.height === 120 &&
-      this._config.width === 280
-    ) {
+    // Show the advertisement image ONLY in the pure “By card” grid
+    if (this._config?._preview && !inEditor) {
       this.shadowRoot.innerHTML = `
         <ha-card style="
           overflow: hidden;
