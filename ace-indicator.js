@@ -330,9 +330,10 @@ static getStubConfig() {
     return Math.max(1, Math.ceil(h / 50));
   }
 
-  /* -------------------- Rendering -------------------- */
+    /* -------------------- Rendering -------------------- */
   _render() {
- 
+    if (!this.shadowRoot) return;
+
     // Walk up the composed tree (crosses Shadow DOM) to detect the editor dialog
     let node = this;
     let inEditor = false;
@@ -375,6 +376,12 @@ static getStubConfig() {
       return;
     }
 
+
+
+    // ----- normal rendering continues below -----
+    try {
+      const cfg = this._config || {};
+      // ... rest of your existing code
 
 
     try {
