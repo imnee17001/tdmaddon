@@ -112,41 +112,21 @@ class AceIndicator extends HTMLElement {
     this._ro.observe(this);
   }
 
-  static getStubConfig() {
-    return {
-      mode: "display",
-      name: "Status",
-      icon: "mdi:circle",
-      theme: "default",
-      height: 36,
-      width: 140,
-      display_color: "#4caf50",
-      entities: [{ entity: "sun.sun" }],
-      show_value: true,
-      tabs: [
-        {
-          id: "grocery",
-          name: "Grocery",
-          icon: "mdi:cart",
-          notes: [
-            { id: "1", text: "Milk", completed: false, added: Date.now() - 3 * 86400000 },
-            { id: "2", text: "Eggs", completed: false, added: Date.now() - 86400000 },
-          ],
-        },
-        {
-          id: "errands",
-          name: "Errands",
-          icon: "mdi:run",
-          notes: [
-            { id: "3", text: "Drop off dry cleaning", completed: false, added: Date.now() },
-          ],
-        },
-      ],
-      active_tab: "grocery",
-      show_completed: true,
-      show_dates: true,
-    };
-  }
+static getStubConfig() {
+  return {
+    mode: "display",
+    name: "ACE – All Cards Engine",
+    icon: "mdi:cards",
+    theme: "soft",
+    height: 120,          // taller so the logo looks good
+    width: 280,
+    display_color: "#4caf50",
+    show_value: false,
+    entities: [{ entity: "sun.sun" }],
+    _preview: true,       // ← private marker used only by the card picker
+  };
+}
+
 
   static getConfigElement() {
     return document.createElement("ace-indicator-editor");
@@ -301,27 +281,32 @@ class AceIndicator extends HTMLElement {
     if (!this.shadowRoot) return;
 
 
-
-    // ===== CARD PICKER GRID + EDITOR PREVIEW =====
-    // Detect both the main "By card" grid and the side preview
-    const isPickerPreview =
-      this.preview ||
-      (this.parentElement && this.parentElement.localName === "hui-card-preview") ||
-      (this.parentNode && this.parentNode.host && this.parentNode.host.localName === "hui-card-preview");
-
-    if (isPickerPreview) {
+    // Show the advertisement image in the “By card” grid (and editor preview)
+    if (this._config?._preview || this.preview) {
       this.shadowRoot.innerHTML = `
-        <ha-card style="overflow:hidden; border-radius:12px; margin:0; box-shadow:none; background:transparent;">
+        <ha-card style="
+          overflow: hidden;
+          border-radius: 12px;
+          margin: 0;
+          box-shadow: none;
+          background: transparent;
+          height: 100%;
+        ">
           <img
             src="https://raw.githubusercontent.com/imnee17001/tdmaddon/main/All%20Cards%20Engine.jpg"
             alt="ACE – All Cards Engine"
-            style="width:100%; height:auto; display:block; object-fit:cover;"
+            style="
+              width: 100%;
+              height: 100%;
+              display: block;
+              object-fit: cover;
+            "
           />
         </ha-card>
       `;
       return;
     }
-    // ===== END PREVIEW =====
+
 
 
     try {
