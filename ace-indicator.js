@@ -335,13 +335,14 @@ static getStubConfig() {
     if (!this.shadowRoot) return;
 
 
-    // Show the advertisement image ONLY for the pure stub that the
-    // “By card” grid uses. As soon as the user changes anything in the
-    // editor (especially the Mode), the real card layout appears.
+  // Show the ad image ONLY while the pure stub is still completely untouched.
+    // Changing Mode, Name, Height or Width will immediately show the real card.
     if (
       this._config?._preview &&
       this._config.mode === "display" &&
-      this._config.name === "ACE – All Cards Engine"
+      this._config.name === "ACE – All Cards Engine" &&
+      this._config.height === 120 &&
+      this._config.width === 280
     ) {
       this.shadowRoot.innerHTML = `
         <ha-card style="
