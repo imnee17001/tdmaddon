@@ -2,13 +2,21 @@
  * ACE Indicator — All Cards Engine
  * Custom Home Assistant Lovelace card
  * File: /config/www/ace-indicator/ace-indicator.js
- * Resource: /local/ace-indicator/ace-indicator.js
+ * Resource: /local/ace-indicator/ace-indicator.js  (or HACS path)
  *
- * Modes: display | thresholds | boolean | graph
+ * Modes: display | thresholds | boolean | graph | notes | solar
  * Themes: default | outline | soft | minimal
+ *
+ * Notes mode (v1.7): multi-tab task lists (Grocery / Laundry / Car / Bills…)
+ * with date-added + “Xd ago”, localStorage persistence, full theme support.
+ * decimals (v1.7.1): 0–8 or empty = full precision (all modes + graph Y-axis).
+ * Solar mode (v1.8.0): multi-source production, house, grid, optional batteries +
+ * animated power-flow diagram + numerical tiles + optional history graph.
+ * Notes tabs fix (v1.8.2): merge config tab structure with localStorage notes.
+ * Layout tip (v1.8.3–1.8.5): mode-specific dismissible guidance + Precise mode.
  */
 
-const CARD_VERSION = "1.5.0";
+const CARD_VERSION = "1.8.5";
 const CARD_NAME = "ace-indicator";
 
 /* ------------------------------------------------------------------ */
@@ -54,6 +62,11 @@ const DEFAULT_ICONS = [
   "mdi:fan",
   "mdi:lightbulb",
   "mdi:power",
+  "mdi:checkbox-marked-outline",
+  "mdi:note-text",
+  "mdi:cart",
+  "mdi:clipboard-list",
+  "mdi:format-list-checks",
   "none",
 ];
 
@@ -110,6 +123,28 @@ class AceIndicator extends HTMLElement {
       display_color: "#4caf50",
       entities: [{ entity: "sensor.example" }],
       show_value: true,
+      tabs: [
+        {
+          id: "grocery",
+          name: "Grocery",
+          icon: "mdi:cart",
+          notes: [
+            { id: "1", text: "Milk", completed: false, added: Date.now() - 3 * 86400000 },
+            { id: "2", text: "Eggs", completed: false, added: Date.now() - 86400000 },
+          ],
+        },
+        {
+          id: "errands",
+          name: "Errands",
+          icon: "mdi:run",
+          notes: [
+            { id: "3", text: "Drop off dry cleaning", completed: false, added: Date.now() },
+          ],
+        },
+      ],
+      active_tab: "grocery",
+      show_completed: true,
+      show_dates: true,
     };
   }
 
@@ -157,6 +192,7 @@ class AceIndicator extends HTMLElement {
       value_size: 14,
       display_color: "#4caf50",
       show_value: true,
+      decimals: null,          // null / empty = full precision; 0–8 = fixed places
       logic: "or",
       true_color: "#4caf50",
       true_label: "True",
@@ -171,13 +207,38 @@ class AceIndicator extends HTMLElement {
         { max: 50, color: "#ff9800", label: "Med" },
         { max: 100, color: "#4caf50", label: "OK" },
       ],
+      notes: [],          // legacy single-list (migrated to tabs)
+      tabs: [],
+      active_tab: null,
+      show_completed: true,
+      show_dates: true,
+      // Solar mode
+      solar_entities: [],
+      house_entities: [],
+      grid_entity: null,
+      grid_import_entity: null,
+      grid_export_entity: null,
+      battery_entities: [],
+      show_graph: true,
+      power_unit: "auto",   // auto | W | kW
       ...config,
       entities, // override with normalized list
     };
 
+    // ---- Notes / Tabs normalization + migration from old single-list format ----
+    this._normalizeNotesConfig();
+    this._normalizeSolarConfig();
+
     // Force single entity in display mode
     if (this._config.mode === "display" && this._config.entities.length > 1) {
       this._config.entities = [this._config.entities[0]];
+    }
+
+    // Solar needs more vertical room for tiles + flow diagram
+    if (this._config.mode === "solar") {
+      if (!this._config.height || this._config.height < 200) {
+        this._config.height = 280;
+      }
     }
 
     try {
@@ -190,7 +251,18 @@ class AceIndicator extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     try {
-      if (!this._config || !this._config.entities?.length) {
+      if (!this._config) {
+        this._render();
+        return;
+      }
+
+      // Notes / Solar modes do not require the generic entities list
+      if (this._config.mode === "notes" || this._config.mode === "solar") {
+        this._render();
+        return;
+      }
+
+      if (!this._config.entities?.length) {
         this._render();
         return;
       }
@@ -209,6 +281,17 @@ class AceIndicator extends HTMLElement {
     // Lovelace uses this for layout + edit-mode hit area.
     // Scale with configured height in ALL modes so the hover/pencil region matches the card.
     const h = Number(this._config?.height) || 36;
+    if (this._config?.mode === "notes") {
+      const active = (this._config.tabs || []).find((t) => t.id === this._config.active_tab)
+        || (this._config.tabs || [])[0];
+      const n = (active?.notes || []).length;
+      // Base + tabs row + ~0.35 rows per item
+      return Math.max(3, Math.ceil(h / 50) + Math.ceil(n * 0.35));
+    }
+    if (this._config?.mode === "solar") {
+      // Solar flow + tiles + optional graph needs more vertical space
+      return Math.max(4, Math.ceil(h / 50));
+    }
     // ~50px per masonry row is a reasonable unit
     return Math.max(1, Math.ceil(h / 50));
   }
@@ -240,7 +323,17 @@ class AceIndicator extends HTMLElement {
       let statusValue = "";
       let icon = cfg.icon || "mdi:circle";
 
-      if (cfg.entities?.length && this._hass) {
+      if (cfg.mode === "notes") {
+        statusColor = cfg.display_color || "#4caf50";
+        statusLabel = cfg.name || "Notes";
+        statusValue = "";
+        // Load notes from localStorage if available (overrides config seed after first use)
+        this._loadNotesFromStorage();
+      } else if (cfg.mode === "solar") {
+        statusColor = cfg.display_color || "#4caf50";
+        statusLabel = cfg.name || "Solar";
+        statusValue = "";
+      } else if (cfg.entities?.length && this._hass) {
         if (cfg.mode === "display") {
           ({ statusColor, statusLabel, statusValue } = this._computeDisplay());
         } else if (cfg.mode === "thresholds") {
@@ -258,23 +351,30 @@ class AceIndicator extends HTMLElement {
 
       const styles = this._themeStyles(theme, statusColor, height, width);
 
+      // Notes mode uses a different layout (vertical list)
+      const isNotes = cfg.mode === "notes";
+      const isSolar = cfg.mode === "solar";
+      const isGraph = cfg.mode === "graph";
+
       this.shadowRoot.innerHTML = `
         <style>
           :host {
             display: block;
-            width: ${cfg.mode === "graph" ? "100%" : width + "px"};
+            width: ${isGraph || isNotes || isSolar ? "100%" : width + "px"};
             max-width: 100%;
             height: auto;
             box-sizing: border-box;
           }
           .indicator {
             display: flex;
-            align-items: center;
+            align-items: ${isNotes ? "stretch" : "center"};
             gap: 8px;
             width: 100%;
             box-sizing: border-box;
-            ${cfg.mode === "graph"
+            ${isGraph
               ? `min-height: ${height}px; height: auto; padding: 10px 12px; justify-content: flex-start;`
+              : isNotes || isSolar
+              ? `min-height: ${height}px; height: auto; padding: 10px 12px; flex-direction: column; justify-content: flex-start;`
               : `height: ${height}px; padding: 0 12px; justify-content: ${
                   (cfg.align || "center") === "left" ? "flex-start" :
                   (cfg.align || "center") === "right" ? "flex-end" : "center"
@@ -283,7 +383,7 @@ class AceIndicator extends HTMLElement {
             font-family: var(--ha-font-family-body, Roboto, sans-serif);
             font-size: 13px;
             font-weight: 500;
-            white-space: ${cfg.mode === "graph" ? "normal" : "nowrap"};
+            white-space: ${isGraph || isNotes || isSolar ? "normal" : "nowrap"};
             user-select: none;
             transition: background 0.2s, border-color 0.2s, color 0.2s;
             ${styles.container}
@@ -333,18 +433,181 @@ class AceIndicator extends HTMLElement {
             color: #9e9e9e;
             font-style: italic;
           }
+          /* Notes mode styles */
+          .notes-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            margin-bottom: 6px;
+            flex-shrink: 0;
+          }
+          .notes-tabs {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            width: 100%;
+            padding-bottom: 4px;
+            margin-bottom: 4px;
+            flex-shrink: 0;
+          }
+          .notes-tab {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 10px;
+            border: 1px solid rgba(128,128,128,0.35);
+            border-radius: 14px;
+            background: transparent;
+            color: inherit;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            white-space: nowrap;
+            opacity: 0.75;
+            transition: all 0.15s;
+          }
+          .notes-tab:hover { opacity: 1; }
+          .notes-tab.active {
+            opacity: 1;
+            background: ${statusColor};
+            border-color: ${statusColor};
+            color: #fff;
+            font-weight: 600;
+          }
+          .notes-tab .tab-count {
+            margin-left: 5px;
+            font-size: 10px;
+            background: rgba(0,0,0,0.18);
+            border-radius: 8px;
+            padding: 1px 5px;
+          }
+          .notes-tab.active .tab-count {
+            background: rgba(255,255,255,0.25);
+          }
+          .notes-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            max-height: ${Math.max(80, height - 110)}px;
+            overflow-y: auto;
+            flex: 1;
+          }
+          .notes-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 5px 0;
+            border-bottom: 1px solid rgba(128,128,128,0.15);
+            font-size: ${Math.max(11, Number(cfg.value_size) || 13)}px;
+          }
+          .notes-item:last-child { border-bottom: none; }
+          .notes-item.completed .notes-text {
+            text-decoration: line-through;
+            opacity: 0.55;
+          }
+          .notes-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            accent-color: ${statusColor};
+            cursor: pointer;
+            flex-shrink: 0;
+          }
+          .notes-text {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            ${styles.text}
+          }
+          .notes-date {
+            font-size: 10px;
+            opacity: 0.55;
+            white-space: nowrap;
+            flex-shrink: 0;
+            ${styles.text}
+          }
+          .notes-delete {
+            background: transparent;
+            border: none;
+            color: inherit;
+            opacity: 0.45;
+            cursor: pointer;
+            padding: 2px 4px;
+            font-size: 14px;
+            line-height: 1;
+            border-radius: 3px;
+          }
+          .notes-delete:hover { opacity: 1; background: rgba(244,67,54,0.15); }
+          .notes-add-row {
+            display: flex;
+            gap: 6px;
+            margin-top: 8px;
+            width: 100%;
+            flex-shrink: 0;
+          }
+          .notes-add-row input {
+            flex: 1;
+            padding: 6px 8px;
+            border: 1px solid rgba(128,128,128,0.35);
+            border-radius: 4px;
+            background: transparent;
+            color: inherit;
+            font-size: 13px;
+            outline: none;
+          }
+          .notes-add-row input::placeholder { opacity: 0.5; }
+          .notes-add-row button {
+            padding: 6px 10px;
+            border: none;
+            border-radius: 4px;
+            background: ${statusColor};
+            color: #fff;
+            font-size: 12px;
+            cursor: pointer;
+            font-weight: 600;
+          }
+          .notes-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 6px;
+            font-size: 11px;
+            opacity: 0.7;
+            width: 100%;
+          }
+          .notes-footer button {
+            background: transparent;
+            border: none;
+            color: inherit;
+            cursor: pointer;
+            text-decoration: underline;
+            font-size: 11px;
+            padding: 0;
+          }
         </style>
         <div class="indicator">
-          ${cfg.mode === "graph" ? this._renderGraphShell(statusColor, statusLabel, statusValue, icon, height, width) : this._renderSimple(statusColor, statusLabel, statusValue, icon)}
+          ${isNotes
+            ? this._renderNotesShell(statusColor, statusLabel, icon)
+            : isSolar
+            ? this._renderSolarShell(statusColor, statusLabel, icon, height)
+            : isGraph
+            ? this._renderGraphShell(statusColor, statusLabel, statusValue, icon, height, width)
+            : this._renderSimple(statusColor, statusLabel, statusValue, icon)}
         </div>
       `;
 
-      if (cfg.mode === "graph") {
+      if (isGraph) {
         this._canvas = this.shadowRoot.querySelector("canvas");
         if (this._canvas && this._historyCache?.ready) {
-          // slight delay so layout has sizes
           requestAnimationFrame(() => this._drawSparkline());
         }
+      }
+
+      if (isNotes) {
+        this._attachNotesListeners();
+      }
+      if (isSolar) {
+        this._startSolarAnimation();
       }
     } catch (err) {
       console.error("ACE Indicator render error", err);
@@ -362,7 +625,533 @@ class AceIndicator extends HTMLElement {
     `;
   }
 
-  _renderGraphShell(statusColor, statusLabel, statusValue, icon, height, width) {
+  /* -------------------- Notes mode (multi-tab + dates) -------------------- */
+  _getNotesStorageKey() {
+    const name = (this._config.name || "default").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+    return `ace-indicator-notes-v2-${name}`;
+  }
+
+  _normalizeNotesConfig() {
+    // Migrate legacy single `notes` array → tabs
+    if ((!this._config.tabs || this._config.tabs.length === 0) && Array.isArray(this._config.notes) && this._config.notes.length) {
+      this._config.tabs = [{
+        id: "default",
+        name: this._config.name || "Tasks",
+        icon: this._config.icon || "mdi:checkbox-marked-outline",
+        notes: this._config.notes,
+      }];
+      this._config.active_tab = "default";
+    }
+
+    if (!Array.isArray(this._config.tabs)) this._config.tabs = [];
+
+    // Ensure every tab has proper structure + every note has added timestamp
+    this._config.tabs = this._config.tabs.map((tab, ti) => {
+      const id = tab.id || `tab-${ti}-${Date.now()}`;
+      const notes = (Array.isArray(tab.notes) ? tab.notes : []).map((n, i) => {
+        if (typeof n === "string") {
+          return { id: `n${Date.now()}-${i}`, text: n, completed: false, added: Date.now() };
+        }
+        return {
+          id: n.id || `n${Date.now()}-${i}`,
+          text: n.text || "",
+          completed: !!n.completed,
+          added: n.added || Date.now(),
+        };
+      }).filter((n) => n.text);
+      return {
+        id,
+        name: tab.name || `List ${ti + 1}`,
+        icon: tab.icon || null,
+        notes,
+      };
+    });
+
+    // Ensure we always have at least one tab
+    if (this._config.tabs.length === 0) {
+      this._config.tabs = [{
+        id: "default",
+        name: "Tasks",
+        icon: "mdi:checkbox-marked-outline",
+        notes: [],
+      }];
+    }
+
+    // Validate / set active_tab
+    const ids = this._config.tabs.map((t) => t.id);
+    if (!this._config.active_tab || !ids.includes(this._config.active_tab)) {
+      this._config.active_tab = this._config.tabs[0].id;
+    }
+  }
+
+  _loadNotesFromStorage() {
+    try {
+      const key = this._getNotesStorageKey();
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+
+      const parsed = JSON.parse(raw);
+      if (!parsed || !Array.isArray(parsed.tabs)) return;
+
+      // Config (editor / YAML) is the source of truth for which tabs exist,
+      // their names, icons and order.  localStorage only supplies the
+      // mutable notes content for tabs that already have an id match.
+      // This prevents newly-added tabs from the visual editor from being
+      // discarded on every render (the previous unconditional overwrite).
+      const configTabs = Array.isArray(this._config.tabs) ? this._config.tabs : [];
+      const storedById = {};
+      for (const t of parsed.tabs) {
+        if (t && t.id) storedById[t.id] = t;
+      }
+
+      const merged = configTabs.map((cfgTab) => {
+        const stored = storedById[cfgTab.id];
+        if (stored && Array.isArray(stored.notes)) {
+          return {
+            id: cfgTab.id,
+            name: cfgTab.name || stored.name || "Tasks",
+            icon: cfgTab.icon != null ? cfgTab.icon : (stored.icon || null),
+            notes: stored.notes,
+          };
+        }
+        // New tab that only exists in the current config → keep its notes (seed or empty)
+        return {
+          id: cfgTab.id,
+          name: cfgTab.name || "Tasks",
+          icon: cfgTab.icon || null,
+          notes: Array.isArray(cfgTab.notes) ? cfgTab.notes : [],
+        };
+      });
+
+      this._config.tabs = merged;
+
+      // Restore last active tab if it still exists
+      const ids = new Set(merged.map((t) => t.id));
+      if (parsed.active_tab && ids.has(parsed.active_tab)) {
+        this._config.active_tab = parsed.active_tab;
+      } else if (!ids.has(this._config.active_tab)) {
+        this._config.active_tab = merged[0]?.id || null;
+      }
+
+      this._normalizeNotesConfig();
+
+      // Persist the merged structure so storage stays in sync with the editor
+      this._saveNotesToStorage();
+    } catch (e) {
+      console.warn("ACE Indicator: notes localStorage load failed", e);
+    }
+  }
+
+  _saveNotesToStorage() {
+    try {
+      const key = this._getNotesStorageKey();
+      const payload = {
+        tabs: this._config.tabs || [],
+        active_tab: this._config.active_tab,
+      };
+      localStorage.setItem(key, JSON.stringify(payload));
+    } catch (e) {
+      console.warn("ACE Indicator: notes localStorage save failed", e);
+    }
+  }
+
+  _getActiveTab() {
+    const tabs = this._config.tabs || [];
+    return tabs.find((t) => t.id === this._config.active_tab) || tabs[0] || { id: "default", name: "Tasks", notes: [] };
+  }
+
+  _formatDaysSince(ts) {
+    if (!ts) return "";
+    const days = Math.floor((Date.now() - Number(ts)) / 86400000);
+    if (days <= 0) return "today";
+    if (days === 1) return "1d ago";
+    if (days < 30) return `${days}d ago`;
+    if (days < 60) return "1mo ago";
+    return `${Math.floor(days / 30)}mo ago`;
+  }
+
+  _formatShortDate(ts) {
+    if (!ts) return "";
+    try {
+      const d = new Date(Number(ts));
+      return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    } catch {
+      return "";
+    }
+  }
+
+  _renderNotesShell(statusColor, statusLabel, icon) {
+    const tabs = this._config.tabs || [];
+    const active = this._getActiveTab();
+    const notes = active.notes || [];
+    const showCompleted = this._config.show_completed !== false;
+    const showDates = this._config.show_dates !== false;
+    const visible = showCompleted ? notes : notes.filter((n) => !n.completed);
+    const completedCount = notes.filter((n) => n.completed).length;
+
+    // Tab bar
+    const tabsHtml = tabs.map((t) => {
+      const isActive = t.id === active.id;
+      const count = (t.notes || []).filter((n) => !n.completed).length;
+      return `
+        <button class="notes-tab ${isActive ? "active" : ""}" data-action="switch-tab" data-tab="${t.id}">
+          ${t.icon ? `<ha-icon icon="${t.icon}" style="--mdc-icon-size:14px;margin-right:4px;"></ha-icon>` : ""}
+          ${this._escapeHtml(t.name)}
+          ${count ? `<span class="tab-count">${count}</span>` : ""}
+        </button>`;
+    }).join("");
+
+    const itemsHtml = visible
+      .map((n) => {
+        const days = showDates ? this._formatDaysSince(n.added) : "";
+        const dateStr = showDates ? this._formatShortDate(n.added) : "";
+        const dateTitle = dateStr ? `Added ${dateStr}` : "";
+        return `
+      <li class="notes-item ${n.completed ? "completed" : ""}" data-id="${n.id}">
+        <input type="checkbox" ${n.completed ? "checked" : ""} data-action="toggle" data-id="${n.id}">
+        <span class="notes-text">${this._escapeHtml(n.text)}</span>
+        ${showDates && days ? `<span class="notes-date" title="${dateTitle}">${days}</span>` : ""}
+        <button class="notes-delete" data-action="delete" data-id="${n.id}" title="Delete">✕</button>
+      </li>`;
+      })
+      .join("");
+
+    return `
+      <div class="notes-header">
+        ${icon ? `<div class="icon"><ha-icon icon="${icon}"></ha-icon></div>` : ""}
+        <div class="text" style="text-align:left;">
+          ${statusLabel ? `<div class="name">${this._escapeHtml(statusLabel)}</div>` : ""}
+        </div>
+      </div>
+
+      ${tabs.length > 1 ? `<div class="notes-tabs">${tabsHtml}</div>` : ""}
+
+      <ul class="notes-list">
+        ${itemsHtml || `<li class="notes-item" style="opacity:0.6;font-style:italic;">No tasks in this list yet</li>`}
+      </ul>
+
+      <div class="notes-add-row">
+        <input type="text" id="notes-new-input" placeholder="Add to ${this._escapeHtml(active.name)}…" autocomplete="off">
+        <button id="notes-add-btn">Add</button>
+      </div>
+
+      <div class="notes-footer">
+        <span>${notes.length} total${completedCount ? ` · ${completedCount} done` : ""}</span>
+        ${completedCount ? `<button id="notes-clear-btn">Clear completed</button>` : ""}
+      </div>
+    `;
+  }
+
+  _escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  _updateActiveTabNotes(mutator) {
+    const tabs = [...(this._config.tabs || [])];
+    const idx = tabs.findIndex((t) => t.id === this._config.active_tab);
+    if (idx < 0) return;
+    const tab = { ...tabs[idx] };
+    tab.notes = mutator([...(tab.notes || [])]);
+    tabs[idx] = tab;
+    this._config.tabs = tabs;
+    this._saveNotesToStorage();
+    this._render();
+  }
+
+  _attachNotesListeners() {
+    const root = this.shadowRoot;
+    if (!root) return;
+
+    // Tab switching
+    root.querySelectorAll('[data-action="switch-tab"]').forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const tabId = btn.dataset.tab;
+        if (tabId && tabId !== this._config.active_tab) {
+          this._config.active_tab = tabId;
+          this._saveNotesToStorage();
+          this._render();
+        }
+      });
+    });
+
+    // Toggle / Delete via event delegation on the list
+    root.querySelector(".notes-list")?.addEventListener("click", (e) => {
+      const target = e.target.closest("[data-action]");
+      if (!target) return;
+      const action = target.dataset.action;
+      const id = target.dataset.id;
+      if (!action || !id) return;
+
+      if (action === "toggle") {
+        this._updateActiveTabNotes((notes) => {
+          const idx = notes.findIndex((n) => n.id === id);
+          if (idx >= 0) notes[idx] = { ...notes[idx], completed: !notes[idx].completed };
+          return notes;
+        });
+      } else if (action === "delete") {
+        this._updateActiveTabNotes((notes) => notes.filter((n) => n.id !== id));
+      }
+    });
+
+    // Checkbox change (backup)
+    root.querySelectorAll('input[type="checkbox"][data-action="toggle"]').forEach((cb) => {
+      cb.addEventListener("change", (e) => {
+        const id = e.target.dataset.id;
+        this._updateActiveTabNotes((notes) => {
+          const idx = notes.findIndex((n) => n.id === id);
+          if (idx >= 0) notes[idx] = { ...notes[idx], completed: e.target.checked };
+          return notes;
+        });
+      });
+    });
+
+    // Add new task
+    const input = root.getElementById("notes-new-input");
+    const addBtn = root.getElementById("notes-add-btn");
+    const doAdd = () => {
+      const text = (input?.value || "").trim();
+      if (!text) return;
+      this._updateActiveTabNotes((notes) => {
+        notes.push({
+          id: `n${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          text,
+          completed: false,
+          added: Date.now(),
+        });
+        return notes;
+      });
+      if (input) input.value = "";
+      requestAnimationFrame(() => {
+        this.shadowRoot?.getElementById("notes-new-input")?.focus();
+      });
+    };
+    addBtn?.addEventListener("click", doAdd);
+    input?.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        doAdd();
+      }
+    });
+
+    // Clear completed on active tab
+    root.getElementById("notes-clear-btn")?.addEventListener("click", () => {
+      this._updateActiveTabNotes((notes) => notes.filter((n) => !n.completed));
+    });
+  }
+
+
+  /* -------------------- Solar mode -------------------- */
+  _normalizeSolarConfig() {
+    const toList = (v) => {
+      if (!v) return [];
+      if (Array.isArray(v)) {
+        return v.map((e) => (typeof e === "string" ? e : (e?.entity || e?.entity_id || ""))).filter(Boolean);
+      }
+      if (typeof v === "string") return [v];
+      return [];
+    };
+    this._config.solar_entities = toList(this._config.solar_entities || this._config.solar_entity);
+    this._config.house_entities = toList(this._config.house_entities || this._config.house_entity);
+
+    let bats = this._config.battery_entities || this._config.battery_entity || [];
+    if (!Array.isArray(bats)) bats = bats ? [bats] : [];
+    this._config.battery_entities = bats.map((b) => {
+      if (typeof b === "string") return { entity: b };
+      return { entity: b.entity || b.entity_id || "", soc: b.soc || b.soc_entity || null };
+    }).filter((b) => b.entity);
+  }
+
+  _solarGetPower(entityId) {
+    if (!entityId || !this._hass?.states[entityId]) return null;
+    const n = Number(this._hass.states[entityId].state);
+    return isNaN(n) ? null : n;
+  }
+
+  _solarSum(entities) {
+    let total = 0, any = false;
+    for (const id of entities || []) {
+      const v = this._solarGetPower(id);
+      if (v !== null) { total += v; any = true; }
+    }
+    return any ? total : null;
+  }
+
+  _solarCompute() {
+    const solar = this._solarSum(this._config.solar_entities);
+    const house = this._solarSum(this._config.house_entities);
+
+    let grid = null;
+    if (this._config.grid_entity) {
+      grid = this._solarGetPower(this._config.grid_entity);
+    } else if (this._config.grid_import_entity || this._config.grid_export_entity) {
+      const imp = this._solarGetPower(this._config.grid_import_entity) || 0;
+      const exp = this._solarGetPower(this._config.grid_export_entity) || 0;
+      grid = imp - exp;
+    }
+
+    const batteries = (this._config.battery_entities || []).map((b) => {
+      const power = this._solarGetPower(b.entity);
+      let soc = null;
+      if (b.soc) {
+        const sv = this._solarGetPower(b.soc);
+        if (sv !== null) soc = sv;
+      }
+      return { entity: b.entity, power, soc };
+    });
+    const hasBattery = batteries.length > 0;
+    let batteryNet = null;
+    if (hasBattery) {
+      batteryNet = batteries.reduce((sum, b) => sum + (b.power || 0), 0);
+    }
+
+    let unit = this._config.power_unit || "auto";
+    const sample = [solar, house, grid, batteryNet].find((v) => v !== null && v !== undefined);
+    if (unit === "auto") {
+      unit = (sample !== undefined && Math.abs(sample) >= 1000) ? "kW" : "W";
+    }
+    const scale = unit === "kW" ? 0.001 : 1;
+
+    const fmt = (v) => {
+      if (v === null || v === undefined) return "—";
+      return this._formatNumber(v * scale) + " " + unit;
+    };
+
+    const importing = grid !== null && grid > 0;
+    const exporting = grid !== null && grid < 0;
+
+    return {
+      solar, house, grid, batteryNet, batteries, hasBattery, unit, scale, fmt,
+      solarDisp: fmt(solar),
+      houseDisp: fmt(house),
+      gridDisp: grid === null ? "—" : ((importing ? "↓ " : exporting ? "↑ " : "") + fmt(Math.abs(grid))),
+      importing, exporting,
+      batteryDisp: batteryNet === null ? "—" : ((batteryNet > 0 ? "↑ " : batteryNet < 0 ? "↓ " : "") + fmt(Math.abs(batteryNet))),
+      batteryCharging: batteryNet !== null && batteryNet > 0,
+      batteryDischarging: batteryNet !== null && batteryNet < 0,
+    };
+  }
+
+  _renderSolarShell(statusColor, statusLabel, icon, height) {
+    const data = this._solarCompute();
+    const showGraph = this._config.show_graph !== false;
+    const flowH = showGraph ? Math.max(120, Math.min(180, (height || 220) * 0.45)) : Math.max(140, (height || 220) - 80);
+
+    const tiles = [
+      { label: "Solar", value: data.solarDisp, color: "#f9a825", icon: "mdi:solar-power" },
+      { label: "House", value: data.houseDisp, color: "#42a5f5", icon: "mdi:home" },
+      { label: "Grid", value: data.gridDisp, color: data.importing ? "#ef5350" : "#66bb6a", icon: "mdi:transmission-tower" },
+    ];
+    if (data.hasBattery) {
+      tiles.push({
+        label: "Battery",
+        value: data.batteryDisp,
+        color: data.batteryCharging ? "#ab47bc" : "#7e57c2",
+        icon: "mdi:battery",
+      });
+    }
+
+    const tilesHtml = tiles.map((t) => `
+      <div class="solar-tile">
+        <div class="solar-tile-icon" style="color:${t.color}"><ha-icon icon="${t.icon}"></ha-icon></div>
+        <div class="solar-tile-label">${t.label}</div>
+        <div class="solar-tile-value">${t.value}</div>
+      </div>`).join("");
+
+    const solarP = Math.max(0, data.solar || 0);
+    const importing = data.importing;
+    const exporting = data.exporting;
+    const batP = data.batteryNet || 0;
+    const hasBat = data.hasBattery;
+
+    // Compact numbers for node labels
+    const short = (disp) => (disp || "—").replace(/ (W|kW)$/, "");
+
+    const svg = `
+      <svg class="solar-flow-svg" viewBox="0 0 320 170" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <marker id="arrO" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#f9a825"/></marker>
+          <marker id="arrG" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#66bb6a"/></marker>
+          <marker id="arrR" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ef5350"/></marker>
+          <marker id="arrP" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ab47bc"/></marker>
+        </defs>
+
+        <!-- Solar node -->
+        <g transform="translate(60,36)">
+          <circle r="24" fill="#fff8e1" stroke="#f9a825" stroke-width="2.5"/>
+          <text text-anchor="middle" dy="-30" font-size="11" fill="currentColor">Solar</text>
+          <text text-anchor="middle" dy="5" font-size="12" font-weight="700" fill="#f9a825">${short(data.solarDisp)}</text>
+        </g>
+        <!-- House node -->
+        <g transform="translate(160,100)">
+          <circle r="26" fill="#e3f2fd" stroke="#42a5f5" stroke-width="2.5"/>
+          <text text-anchor="middle" dy="-32" font-size="11" fill="currentColor">House</text>
+          <text text-anchor="middle" dy="5" font-size="12" font-weight="700" fill="#42a5f5">${short(data.houseDisp)}</text>
+        </g>
+        <!-- Grid node -->
+        <g transform="translate(260,36)">
+          <circle r="24" fill="${importing ? "#ffebee" : "#e8f5e9"}" stroke="${importing ? "#ef5350" : "#66bb6a"}" stroke-width="2.5"/>
+          <text text-anchor="middle" dy="-30" font-size="11" fill="currentColor">Grid</text>
+          <text text-anchor="middle" dy="5" font-size="12" font-weight="700" fill="${importing ? "#ef5350" : "#66bb6a"}">${data.grid === null ? "—" : short(data.gridDisp)}</text>
+        </g>
+        ${hasBat ? `
+        <g transform="translate(160,155)">
+          <circle r="20" fill="#f3e5f5" stroke="#ab47bc" stroke-width="2.5"/>
+          <text text-anchor="middle" dy="-26" font-size="11" fill="currentColor">Battery</text>
+          <text text-anchor="middle" dy="4" font-size="11" font-weight="700" fill="#ab47bc">${short(data.batteryDisp)}</text>
+        </g>` : ""}
+
+        <!-- Static flow lines -->
+        <path d="M84,45 Q120,70 140,90" fill="none" stroke="#f9a825" stroke-width="2.5" stroke-opacity="0.4" marker-end="url(#arrO)"/>
+        <path d="M84,36 Q160,12 236,36" fill="none" stroke="#66bb6a" stroke-width="2.5" stroke-opacity="${exporting ? 0.55 : 0.12}" marker-end="url(#arrG)"/>
+        <path d="M236,45 Q200,70 180,90" fill="none" stroke="#ef5350" stroke-width="2.5" stroke-opacity="${importing ? 0.55 : 0.12}" marker-end="url(#arrR)"/>
+        ${hasBat ? `<path d="M160,126 L160,135" fill="none" stroke="#ab47bc" stroke-width="2.5" stroke-opacity="0.45" marker-end="url(#arrP)"/>` : ""}
+
+        <!-- Animated particles -->
+        ${solarP > 5 ? `<circle r="3.5" fill="#f9a825"><animateMotion dur="${solarP > 2000 ? "1.6s" : "2.8s"}" repeatCount="indefinite" path="M84,45 Q120,70 140,90"/></circle>` : ""}
+        ${exporting && Math.abs(data.grid||0) > 10 ? `<circle r="3" fill="#66bb6a"><animateMotion dur="2.1s" repeatCount="indefinite" path="M84,36 Q160,12 236,36"/></circle>` : ""}
+        ${importing && Math.abs(data.grid||0) > 10 ? `<circle r="3" fill="#ef5350"><animateMotion dur="2.1s" repeatCount="indefinite" path="M236,45 Q200,70 180,90"/></circle>` : ""}
+        ${hasBat && Math.abs(batP) > 10 ? `<circle r="3" fill="#ab47bc"><animateMotion dur="1.9s" repeatCount="indefinite" path="${batP > 0 ? "M160,126 L160,135" : "M160,135 L160,126"}"/></circle>` : ""}
+      </svg>`;
+
+    return `
+      <style>
+        .solar-wrap { width:100%; display:flex; flex-direction:column; gap:8px; color:inherit; }
+        .solar-header { display:flex; align-items:center; gap:8px; }
+        .solar-tiles { display:flex; flex-wrap:wrap; gap:6px; }
+        .solar-tile {
+          flex:1; min-width:68px; text-align:center;
+          background:rgba(128,128,128,0.08); border-radius:8px; padding:6px 3px;
+        }
+        .solar-tile-icon { --mdc-icon-size:17px; margin-bottom:1px; }
+        .solar-tile-label { font-size:10px; opacity:0.7; }
+        .solar-tile-value { font-size:12px; font-weight:600; margin-top:1px; white-space:nowrap; }
+        .solar-flow-svg { width:100%; height:${flowH}px; display:block; }
+        .solar-flow-svg text { fill:currentColor; font-family:var(--ha-font-family-body, Roboto, sans-serif); }
+      </style>
+      <div class="solar-wrap">
+        <div class="solar-header">
+          ${icon ? `<div class="icon"><ha-icon icon="${icon}"></ha-icon></div>` : ""}
+          <div class="text" style="text-align:left;">
+            ${statusLabel ? `<div class="name">${this._escapeHtml(statusLabel)}</div>` : ""}
+          </div>
+        </div>
+        <div class="solar-tiles">${tilesHtml}</div>
+        <div class="solar-flow">${svg}</div>
+      </div>
+    `;
+  }
+
+  _startSolarAnimation() {
+    // SMIL animateMotion is used; nothing extra required for v1.
+  }
+
+
+    _renderGraphShell(statusColor, statusLabel, statusValue, icon, height, width) {
     const showValue = this._config.show_value !== false;
     // Leave room for header + legend so the plot never sits under the title
     const canvasH = Math.max(56, height > 90 ? height - 56 : 56);
@@ -510,15 +1299,32 @@ class AceIndicator extends HTMLElement {
     return "";
   }
 
+  // Format a numeric value according to the decimals option, then attach unit.
+  // decimals: null/undefined/"" → full precision; 0–8 → fixed decimal places.
+  _formatNumber(val) {
+    if (val === null || val === undefined || val === "") return "";
+    const n = Number(val);
+    if (isNaN(n)) return String(val);
+
+    const d = this._config?.decimals;
+    if (d === null || d === undefined || d === "") {
+      // Full precision – strip trailing zeros after the decimal for cleaner display
+      return String(n);
+    }
+    const places = Math.max(0, Math.min(8, Number(d)));
+    return n.toFixed(places);
+  }
+
   // Currency / prefix-style units go before the number; everything else after.
   _formatValueWithUnit(val, unit) {
-    if (!unit) return `${val}`;
+    const formatted = this._formatNumber(val);
+    if (!unit) return formatted;
     const u = String(unit).trim();
     const PREFIX_UNITS = ["$", "€", "£", "¥", "₹", "₩", "₽", "₪", "₱", "฿", "₫", "₴", "₦", "₡", "R$", "A$", "C$", "HK$", "NZ$", "US$"];
     if (PREFIX_UNITS.includes(u) || /^[A-Z]{0,3}\$$/.test(u)) {
-      return `${u}${val}`;
+      return `${u}${formatted}`;
     }
-    return `${val} ${u}`;
+    return `${formatted} ${u}`;
   }
 
   _getCurrentValues() {
@@ -699,8 +1505,14 @@ class AceIndicator extends HTMLElement {
         ctx.moveTo(padL, y);
         ctx.lineTo(w - padR, y);
         ctx.stroke();
-        // y label – keep bottom label above the axis so it doesn't hit time labels
-        const label = Math.abs(val) >= 100 ? val.toFixed(0) : val.toFixed(1);
+        // y label – respect the decimals option when set, otherwise smart default
+        let label;
+        const d = this._config?.decimals;
+        if (d !== null && d !== undefined && d !== "") {
+          label = val.toFixed(Math.max(0, Math.min(8, Number(d))));
+        } else {
+          label = Math.abs(val) >= 100 ? val.toFixed(0) : val.toFixed(1);
+        }
         ctx.textAlign = "right";
         if (i === 0) {
           ctx.textBaseline = "bottom";
@@ -889,6 +1701,10 @@ class AceIndicatorEditor extends HTMLElement {
     if (key === "mode" && value === "display" && newCfg.entities?.length > 1) {
       newCfg.entities = [newCfg.entities[0]];
     }
+    // Solar needs more vertical room
+    if (key === "mode" && value === "solar" && (!newCfg.height || newCfg.height < 200)) {
+      newCfg.height = 280;
+    }
     this._config = newCfg;
     this._fire(newCfg);
     this._render();
@@ -914,9 +1730,79 @@ class AceIndicatorEditor extends HTMLElement {
     this._update("entities", entities);
   }
 
+  /* -------------------- Layout tip (dismissible, mode-specific) -------------------- */
+  _isLayoutTipHidden() {
+    try {
+      return localStorage.getItem("ace-indicator-hide-layout-tip") === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  _hideLayoutTip() {
+    try {
+      localStorage.setItem("ace-indicator-hide-layout-tip", "1");
+    } catch {
+      /* ignore */
+    }
+    this._render();
+  }
+
+  _showLayoutTip() {
+    try {
+      localStorage.removeItem("ace-indicator-hide-layout-tip");
+    } catch {
+      /* ignore */
+    }
+    this._render();
+  }
+
+  /** Mode-specific layout guidance. Uses official HA term "Precise mode". */
+  _getLayoutTip(mode) {
+    switch (mode) {
+      case "notes":
+        return {
+          title: "⚠️ NOTES / TASKS — NEEDS ROOM",
+          body: `Give this card <strong>≈ 12–18 columns</strong> on the Layout tab.
+            Tabs + the task list need horizontal space or the card becomes unusable.`,
+          note: `On the Layout tab also enable <strong>Precise mode</strong> for finer column control.
+            The pixel Width setting above is only a preferred size — HA’s grid columns are the real constraint.`,
+        };
+      case "solar":
+        return {
+          title: "⚠️ SOLAR / POWER FLOW — NEEDS ROOM",
+          body: `Give this card <strong>≈ 16–24 columns</strong> (or full width) on the Layout tab.
+            The power-flow diagram + tiles will look cramped otherwise.`,
+          note: `On the Layout tab also enable <strong>Precise mode</strong> for finer column control.
+            Consider a section with higher column_span if you need even more total width.`,
+        };
+      case "graph":
+        return {
+          title: "⚠️ GRAPH — FILLS SECTION WIDTH",
+          body: `Graph mode stretches to the available width. Still set a sensible column span
+            (<strong>≈ 8–16 columns</strong>) so it doesn’t collapse into a thin strip.`,
+          note: `On the Layout tab enable <strong>Precise mode</strong> if the size still looks wrong.
+            Pixel Width is ignored in graph mode — columns control the real size.`,
+        };
+      case "display":
+      case "thresholds":
+      case "boolean":
+      default:
+        return {
+          title: "⚠️ COMPACT INDICATOR",
+          body: `These modes are meant to be tight. <strong>≈ 3–6 columns</strong> is usually enough.
+            Give it more only if you want a wider label or larger icon/value text.`,
+          note: `If the card still shrinks unexpectedly, open the Layout tab and enable
+            <strong>Precise mode</strong> for finer column steps.`,
+        };
+    }
+  }
+
   _render() {
     const cfg = this._config;
     const mode = cfg.mode || "display";
+    const tipHidden = this._isLayoutTipHidden();
+    const tip = this._getLayoutTip(mode);
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -997,6 +1883,19 @@ class AceIndicatorEditor extends HTMLElement {
           font-size: 12px;
           margin-bottom: 10px;
         }
+        .layout-tip {
+          background: #fff3cd;
+          border: 2px solid #e6a700;
+          padding: 10px 12px;
+          border-radius: 6px;
+          font-size: 12px;
+          margin-top: 10px;
+          margin-bottom: 4px;
+          color: #333;
+          line-height: 1.4;
+        }
+        .layout-tip strong { font-weight: 700; }
+        .layout-tip a { color: var(--primary-color); cursor: pointer; text-decoration: underline; }
       </style>
 
       <!-- MODE -->
@@ -1008,6 +1907,8 @@ class AceIndicatorEditor extends HTMLElement {
             <option value="thresholds" ${mode === "thresholds" ? "selected" : ""}>Thresholds</option>
             <option value="boolean" ${mode === "boolean" ? "selected" : ""}>Boolean Logic</option>
             <option value="graph" ${mode === "graph" ? "selected" : ""}>Graph (sparkline)</option>
+            <option value="notes" ${mode === "notes" ? "selected" : ""}>Notes / Tasks</option>
+            <option value="solar" ${mode === "solar" ? "selected" : ""}>Solar / Power Flow</option>
           </select>
         </div>
       </div>
@@ -1054,16 +1955,25 @@ class AceIndicatorEditor extends HTMLElement {
           <div class="row">
             <div>
               <label>Height (px)</label>
-              <input id="height" type="number" min="24" max="120" value="${cfg.height || 36}">
+              <input id="height" type="number" min="24" max="480" value="${cfg.height || 36}">
             </div>
             <div>
               <label>Width (px)</label>
               <input id="width" type="number" min="60" max="400" value="${cfg.width || 140}">
             </div>
           </div>
-          <div class="hint">${mode === "graph"
-            ? "Graph mode fills the section width — set columns in the Layout tab"
-            : `Recommended Layout columns ≈ ${Math.max(3, Math.ceil((cfg.width || 140) / 40))} (give the card enough columns or it will shrink)`}</div>
+
+          ${tipHidden
+            ? `<div class="hint" style="margin-top:6px"><a id="show-layout-tip">Show layout tip</a></div>`
+            : `<div class="layout-tip">
+                <div style="font-weight:700; margin-bottom:6px;">${tip.title}</div>
+                <div style="margin-bottom:6px;">${tip.body}</div>
+                <div style="margin-bottom:8px; font-size:11px;">${tip.note}</div>
+                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:500; margin:0;">
+                  <input type="checkbox" id="hide-layout-tip" style="width:16px;height:16px;accent-color:var(--primary-color);">
+                  Got it — don’t show this tip again
+                </label>
+              </div>`}
 
           <div class="row" style="margin-top:8px">
             <div>
@@ -1084,10 +1994,21 @@ class AceIndicatorEditor extends HTMLElement {
             <input type="checkbox" id="show_value" ${cfg.show_value !== false ? "checked" : ""} style="width:16px;height:16px;accent-color:var(--primary-color);">
             Show numeric value
           </label>
+
+          <div class="row" style="margin-top:10px">
+            <div style="flex:1">
+              <label>Decimal places</label>
+              <input id="decimals" type="number" min="0" max="8" step="1"
+                     value="${cfg.decimals === null || cfg.decimals === undefined || cfg.decimals === "" ? "" : cfg.decimals}"
+                     placeholder="Full precision">
+              <div class="hint">Leave empty for full precision. 0–8 forces fixed places (value + graph Y-axis).</div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- ENTITIES -->
+      <!-- ENTITIES (hidden for notes mode) -->
+      ${mode !== "notes" && mode !== "solar" ? `
       <div class="section">
         <div class="section-title">Entities ${mode === "display" ? "(max 1 in Display mode)" : ""}</div>
         <div class="frame">
@@ -1096,6 +2017,7 @@ class AceIndicatorEditor extends HTMLElement {
           <button id="add-entity" class="secondary" style="margin-top:6px" ${mode === "display" && (cfg.entities || []).length >= 1 ? "disabled" : ""}>+ Add entity</button>
         </div>
       </div>
+      ` : ""}
 
       <!-- MODE-SPECIFIC -->
       ${mode === "display" ? `
@@ -1196,16 +2118,99 @@ class AceIndicatorEditor extends HTMLElement {
           </div>
         </div>
       ` : ""}
+
+      ${mode === "notes" ? `
+        <div class="section">
+          <div class="section-title">Notes / Tasks Mode</div>
+          <div class="frame">
+            <div class="hint" style="margin-bottom:10px">
+              Multi-tab task lists (Grocery, Laundry, Car, Bills…).<br>
+              Each item tracks <strong>date added</strong> and shows “Xd ago”.<br>
+              Data lives in browser localStorage keyed by the card’s Display Name.
+            </div>
+            <label>Accent / Theme Color</label>
+            <input id="display_color" type="color" value="${cfg.display_color || "#4caf50"}">
+            <div class="row" style="margin-top:10px">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;">
+                <input type="checkbox" id="show_completed" ${cfg.show_completed !== false ? "checked" : ""} style="width:16px;height:16px;accent-color:var(--primary-color);">
+                Show completed
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:1;">
+                <input type="checkbox" id="show_dates" ${cfg.show_dates !== false ? "checked" : ""} style="width:16px;height:16px;accent-color:var(--primary-color);">
+                Show dates / days ago
+              </label>
+            </div>
+
+            <div class="section-title" style="margin-top:16px;margin-bottom:6px;">Tabs / Lists</div>
+            <div class="hint" style="margin-bottom:8px">Each tab is an independent list. Add the tabs you need (Grocery, Laundry, Car maintenance, etc.).</div>
+            <div id="tabs-container"></div>
+            <button id="add-tab" class="secondary" style="margin-top:6px">+ Add tab</button>
+          </div>
+        </div>
+      ` : ""}
+
+      ${mode === "solar" ? `
+        <div class="section">
+          <div class="section-title">Solar / Power Flow</div>
+          <div class="frame">
+            <div class="hint" style="margin-bottom:10px">
+              Map your production, load, grid and optional battery entities.<br>
+              Multiple solar entities are summed (micro-inverters + main inverter).
+            </div>
+
+            <div class="section-title" style="font-size:13px;margin-bottom:4px;">Solar production</div>
+            <div id="solar-entities-container"></div>
+            <button id="add-solar-entity" class="secondary" style="margin-top:4px;margin-bottom:12px">+ Add solar entity</button>
+
+            <div class="section-title" style="font-size:13px;margin-bottom:4px;">House / load</div>
+            <div id="house-entities-container"></div>
+            <button id="add-house-entity" class="secondary" style="margin-top:4px;margin-bottom:12px">+ Add house entity</button>
+
+            <div class="section-title" style="font-size:13px;margin-bottom:4px;">Grid power (signed: + import / – export)</div>
+            <div id="grid-entity-container"></div>
+
+            <div class="section-title" style="font-size:13px;margin:12px 0 4px;">Batteries (optional)</div>
+            <div id="battery-entities-container"></div>
+            <button id="add-battery-entity" class="secondary" style="margin-top:4px;margin-bottom:12px">+ Add battery entity</button>
+
+            <div class="row" style="margin-top:8px">
+              <div style="flex:1">
+                <label>Power unit</label>
+                <select id="power_unit">
+                  <option value="auto" ${(cfg.power_unit || "auto") === "auto" ? "selected" : ""}>Auto</option>
+                  <option value="W" ${cfg.power_unit === "W" ? "selected" : ""}>Watts (W)</option>
+                  <option value="kW" ${cfg.power_unit === "kW" ? "selected" : ""}>Kilowatts (kW)</option>
+                </select>
+              </div>
+              <div style="flex:1; display:flex; align-items:flex-end;">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                  <input type="checkbox" id="show_graph" ${cfg.show_graph !== false ? "checked" : ""} style="width:16px;height:16px;accent-color:var(--primary-color);">
+                  Show history graph (future)
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      ` : ""}
+
     `;
 
     // Event listeners
+    this.shadowRoot.getElementById("hide-layout-tip")?.addEventListener("change", (e) => {
+      if (e.target.checked) this._hideLayoutTip();
+    });
+    this.shadowRoot.getElementById("show-layout-tip")?.addEventListener("click", (e) => {
+      e.preventDefault();
+      this._showLayoutTip();
+    });
+
     this.shadowRoot.getElementById("mode")?.addEventListener("change", (e) => this._update("mode", e.target.value));
     this.shadowRoot.getElementById("name")?.addEventListener("change", (e) => this._update("name", e.target.value));
     this.shadowRoot.getElementById("theme")?.addEventListener("change", (e) => this._update("theme", e.target.value));
     this.shadowRoot.getElementById("align")?.addEventListener("change", (e) => this._update("align", e.target.value));
     this.shadowRoot.getElementById("height")?.addEventListener("change", (e) => {
       const v = Number(e.target.value);
-      this._update("height", !v || v < 24 ? 36 : v);
+      this._update("height", !v || v < 24 ? 36 : Math.min(480, v));
     });
     this.shadowRoot.getElementById("width")?.addEventListener("change", (e) => {
       const v = Number(e.target.value);
@@ -1224,6 +2229,15 @@ class AceIndicatorEditor extends HTMLElement {
       this._update("value_size", !v || v < 10 ? 14 : Math.min(36, v));
     });
     this.shadowRoot.getElementById("show_value")?.addEventListener("change", (e) => this._update("show_value", e.target.checked));
+    this.shadowRoot.getElementById("decimals")?.addEventListener("change", (e) => {
+      const raw = e.target.value.trim();
+      if (raw === "") {
+        this._update("decimals", null);
+      } else {
+        const v = Number(raw);
+        this._update("decimals", isNaN(v) ? null : Math.max(0, Math.min(8, Math.round(v))));
+      }
+    });
     this.shadowRoot.getElementById("display_color")?.addEventListener("change", (e) => this._update("display_color", e.target.value));
     this.shadowRoot.getElementById("logic")?.addEventListener("change", (e) => this._update("logic", e.target.value));
     this.shadowRoot.getElementById("true_color")?.addEventListener("change", (e) => this._update("true_color", e.target.value));
@@ -1233,6 +2247,51 @@ class AceIndicatorEditor extends HTMLElement {
     this.shadowRoot.getElementById("hours_to_show")?.addEventListener("change", (e) => this._update("hours_to_show", Number(e.target.value)));
     this.shadowRoot.getElementById("time_format")?.addEventListener("change", (e) => this._update("time_format", e.target.value));
     this.shadowRoot.getElementById("graph_type")?.addEventListener("change", (e) => this._update("graph_type", e.target.value));
+
+    // Notes mode
+    this.shadowRoot.getElementById("show_completed")?.addEventListener("change", (e) => this._update("show_completed", e.target.checked));
+    this.shadowRoot.getElementById("show_dates")?.addEventListener("change", (e) => this._update("show_dates", e.target.checked));
+
+    // Solar mode
+    this.shadowRoot.getElementById("power_unit")?.addEventListener("change", (e) => {
+      this._update("power_unit", e.target.value);
+    });
+    this.shadowRoot.getElementById("show_graph")?.addEventListener("change", (e) => {
+      this._update("show_graph", e.target.checked);
+    });
+    if (mode === "solar") {
+      this._buildSolarEntityRows();
+      this.shadowRoot.getElementById("add-solar-entity")?.addEventListener("click", () => {
+        const list = [...(this._config.solar_entities || []), ""];
+        this._update("solar_entities", list);
+      });
+      this.shadowRoot.getElementById("add-house-entity")?.addEventListener("click", () => {
+        const list = [...(this._config.house_entities || []), ""];
+        this._update("house_entities", list);
+      });
+      this.shadowRoot.getElementById("add-battery-entity")?.addEventListener("click", () => {
+        const list = [...(this._config.battery_entities || []), { entity: "" }];
+        this._update("battery_entities", list);
+      });
+    }
+
+    // Build tab rows if in notes mode
+    if (mode === "notes") {
+      this._buildTabRows();
+      this.shadowRoot.getElementById("add-tab")?.addEventListener("click", () => {
+        const tabs = [...(this._config.tabs || [])];
+        const newId = `tab-${Date.now()}`;
+        tabs.push({
+          id: newId,
+          name: `List ${tabs.length + 1}`,
+          icon: "mdi:checkbox-marked-outline",
+          notes: [],
+        });
+        this._update("tabs", tabs);
+        // Also set as active if first
+        if (tabs.length === 1) this._update("active_tab", newId);
+      });
+    }
 
     // Icon handling
     const iconSelect = this.shadowRoot.getElementById("icon");
@@ -1364,7 +2423,203 @@ class AceIndicatorEditor extends HTMLElement {
       container.appendChild(row);
     });
   }
+
+  _buildTabRows() {
+    const container = this.shadowRoot.getElementById("tabs-container");
+    if (!container) return;
+    container.innerHTML = "";
+
+    const tabs = this._config.tabs || [];
+    const ICON_CHOICES = [
+      "mdi:cart", "mdi:washing-machine", "mdi:car", "mdi:cash", "mdi:home",
+      "mdi:clipboard-list", "mdi:checkbox-marked-outline", "mdi:note-text",
+      "mdi:broom", "mdi:tools", "mdi:pill", "mdi:run",
+    ];
+
+    tabs.forEach((tab, idx) => {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;";
+
+      // Name
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.value = tab.name || "";
+      nameInput.placeholder = "Tab name";
+      nameInput.style.cssText = "flex:1;min-width:100px;";
+      nameInput.addEventListener("change", () => {
+        const updated = [...(this._config.tabs || [])];
+        updated[idx] = { ...updated[idx], name: nameInput.value.trim() || `List ${idx + 1}` };
+        this._update("tabs", updated);
+      });
+      row.appendChild(nameInput);
+
+      // Icon select
+      const iconSelect = document.createElement("select");
+      iconSelect.style.cssText = "width:140px;";
+      ICON_CHOICES.forEach((ic) => {
+        const opt = document.createElement("option");
+        opt.value = ic;
+        opt.textContent = ic.replace("mdi:", "");
+        if (tab.icon === ic) opt.selected = true;
+        iconSelect.appendChild(opt);
+      });
+      // Allow custom
+      const customOpt = document.createElement("option");
+      customOpt.value = "__custom__";
+      customOpt.textContent = "Other…";
+      if (tab.icon && !ICON_CHOICES.includes(tab.icon)) customOpt.selected = true;
+      iconSelect.appendChild(customOpt);
+
+      iconSelect.addEventListener("change", () => {
+        if (iconSelect.value === "__custom__") return;
+        const updated = [...(this._config.tabs || [])];
+        updated[idx] = { ...updated[idx], icon: iconSelect.value };
+        this._update("tabs", updated);
+      });
+      row.appendChild(iconSelect);
+
+      // Remove
+      const btn = document.createElement("button");
+      btn.className = "danger";
+      btn.textContent = "✕";
+      btn.disabled = tabs.length <= 1;
+      btn.title = "Remove tab";
+      btn.addEventListener("click", () => {
+        if (tabs.length <= 1) return;
+        const updated = [...(this._config.tabs || [])];
+        const removedId = updated[idx].id;
+        updated.splice(idx, 1);
+        this._update("tabs", updated);
+        if (this._config.active_tab === removedId) {
+          this._update("active_tab", updated[0]?.id);
+        }
+      });
+      row.appendChild(btn);
+
+      container.appendChild(row);
+    });
+  }
+
+  _buildSolarEntityRows() {
+    const PICKER_W = "260px";
+    const BTN_W = "32px";
+
+    const makeRow = (entityId, onChange, onRemove, canRemove) => {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:6px;";
+      const picker = document.createElement("ha-entity-picker");
+      picker.hass = this._hass;
+      picker.value = entityId || "";
+      picker.allowCustomEntity = true;
+      picker.style.cssText = `width:${PICKER_W};min-width:${PICKER_W};flex:0 0 ${PICKER_W};`;
+      picker.addEventListener("value-changed", (ev) => onChange(ev.detail.value || ""));
+      row.appendChild(picker);
+      const btn = document.createElement("button");
+      btn.className = "danger";
+      btn.textContent = "✕";
+      btn.disabled = !canRemove;
+      btn.style.cssText = `width:${BTN_W};min-width:${BTN_W};flex:0 0 ${BTN_W};padding:6px 0;`;
+      btn.addEventListener("click", onRemove);
+      row.appendChild(btn);
+      return row;
+    };
+
+    // Solar production list
+    const solarBox = this.shadowRoot.getElementById("solar-entities-container");
+    if (solarBox) {
+      solarBox.innerHTML = "";
+      let list = [...(this._config.solar_entities || [])];
+      if (!list.length) list = [""];
+      list.forEach((ent, idx) => {
+        solarBox.appendChild(makeRow(
+          ent,
+          (val) => {
+            const updated = [...(this._config.solar_entities || [])];
+            // ensure length
+            while (updated.length <= idx) updated.push("");
+            updated[idx] = val;
+            this._update("solar_entities", updated);
+          },
+          () => {
+            const updated = [...(this._config.solar_entities || [])];
+            updated.splice(idx, 1);
+            this._update("solar_entities", updated);
+          },
+          list.length > 1
+        ));
+      });
+    }
+
+    // House list
+    const houseBox = this.shadowRoot.getElementById("house-entities-container");
+    if (houseBox) {
+      houseBox.innerHTML = "";
+      let list = [...(this._config.house_entities || [])];
+      if (!list.length) list = [""];
+      list.forEach((ent, idx) => {
+        houseBox.appendChild(makeRow(
+          ent,
+          (val) => {
+            const updated = [...(this._config.house_entities || [])];
+            while (updated.length <= idx) updated.push("");
+            updated[idx] = val;
+            this._update("house_entities", updated);
+          },
+          () => {
+            const updated = [...(this._config.house_entities || [])];
+            updated.splice(idx, 1);
+            this._update("house_entities", updated);
+          },
+          list.length > 1
+        ));
+      });
+    }
+
+    // Grid (single)
+    const gridBox = this.shadowRoot.getElementById("grid-entity-container");
+    if (gridBox) {
+      gridBox.innerHTML = "";
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:6px;";
+      const picker = document.createElement("ha-entity-picker");
+      picker.hass = this._hass;
+      picker.value = this._config.grid_entity || "";
+      picker.allowCustomEntity = true;
+      picker.style.cssText = `width:${PICKER_W};min-width:${PICKER_W};flex:0 0 ${PICKER_W};`;
+      picker.addEventListener("value-changed", (ev) => {
+        this._update("grid_entity", ev.detail.value || null);
+      });
+      row.appendChild(picker);
+      gridBox.appendChild(row);
+    }
+
+    // Batteries
+    const batBox = this.shadowRoot.getElementById("battery-entities-container");
+    if (batBox) {
+      batBox.innerHTML = "";
+      const list = this._config.battery_entities || [];
+      list.forEach((b, idx) => {
+        const ent = typeof b === "string" ? b : (b.entity || "");
+        batBox.appendChild(makeRow(
+          ent,
+          (val) => {
+            const updated = [...(this._config.battery_entities || [])];
+            updated[idx] = { entity: val };
+            this._update("battery_entities", updated);
+          },
+          () => {
+            const updated = [...(this._config.battery_entities || [])];
+            updated.splice(idx, 1);
+            this._update("battery_entities", updated);
+          },
+          true
+        ));
+      });
+    }
+  }
 }
+
+
 
 customElements.define("ace-indicator-editor", AceIndicatorEditor);
 
@@ -1375,9 +2630,9 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: CARD_NAME,
   name: "ACE Indicator",
-  description: "ACE (All Cards Engine) — compact multi-mode indicator: Display, Thresholds, Boolean, Graph.",
+  description: "ACE (All Cards Engine) — compact multi-mode indicator: Display, Thresholds, Boolean, Graph, Notes/Tasks, Solar.",
   preview: true,
-  documentationURL: "https://github.com/",
+  documentationURL: "https://github.com/imnee17001/tdmaddon",
 });
 
 console.info(
