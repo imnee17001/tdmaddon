@@ -281,10 +281,14 @@ static getStubConfig() {
     if (!this.shadowRoot) return;
 
 
-       // Show the advertisement image ONLY in the pure “By card” grid.
-    // Once the user opens the configuration dialog the flag is cleared
-    // so the real card layout appears on the right.
-    if (this._config?._preview) {
+      // Show the advertisement image ONLY in the pure “By card” grid.
+    // Detect the configuration dialog so we never show the logo there.
+    const inEditor =
+      !!this.closest?.("hui-dialog-edit-card") ||
+      !!this.closest?.(".element-preview") ||
+      !!this.closest?.("ha-dialog");
+
+    if (this._config?._preview && !inEditor) {
       this.shadowRoot.innerHTML = `
         <ha-card style="
           overflow: hidden;
@@ -306,10 +310,6 @@ static getStubConfig() {
           />
         </ha-card>
       `;
-
-      // Clear the marker immediately so the editor preview switches
-      // to the real card layout on the next update.
-      delete this._config._preview;
       return;
     }
 
