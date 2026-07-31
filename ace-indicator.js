@@ -121,7 +121,7 @@ class AceIndicator extends HTMLElement {
       height: 36,
       width: 140,
       display_color: "#4caf50",
-      entities: [{ entity: "sensor.example" }],
+      entities: [{ entity: "sun.sun" }],
       show_value: true,
       tabs: [
         {
@@ -301,9 +301,15 @@ class AceIndicator extends HTMLElement {
     if (!this.shadowRoot) return;
 
 
-    // ===== PREVIEW MODE (card picker thumbnail) =====
-    // Shows the advertisement image instead of "Unavailable"
-    if (this.preview) {
+
+    // ===== CARD PICKER GRID + EDITOR PREVIEW =====
+    // Detect both the main "By card" grid and the side preview
+    const isPickerPreview =
+      this.preview ||
+      (this.parentElement && this.parentElement.localName === "hui-card-preview") ||
+      (this.parentNode && this.parentNode.host && this.parentNode.host.localName === "hui-card-preview");
+
+    if (isPickerPreview) {
       this.shadowRoot.innerHTML = `
         <ha-card style="overflow:hidden; border-radius:12px; margin:0; box-shadow:none; background:transparent;">
           <img
@@ -315,8 +321,7 @@ class AceIndicator extends HTMLElement {
       `;
       return;
     }
-    // ===== END PREVIEW MODE =====
-
+    // ===== END PREVIEW =====
 
 
     try {
