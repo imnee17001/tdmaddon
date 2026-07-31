@@ -114,18 +114,72 @@ class AceIndicator extends HTMLElement {
 
 static getStubConfig() {
   return {
+    // ----- These two values are required for the logo to appear in the grid -----
     mode: "display",
     name: "ACE – All Cards Engine",
+    // ---------------------------------------------------------------------------
+
     icon: "mdi:cards",
     theme: "soft",
-    height: 120,          // taller so the logo looks good
+    height: 120,
     width: 280,
     display_color: "#4caf50",
-    show_value: false,
+    show_value: true,
+    decimals: null,
+
+    // Better sample entity (still almost always present)
     entities: [{ entity: "sun.sun" }],
-    _preview: true,       // ← private marker used only by the card picker
+
+    // Thresholds defaults (so the mode doesn’t say “no data”)
+    thresholds: [
+      { max: 20, color: "#f44336", label: "Low" },
+      { max: 50, color: "#ff9800", label: "Med" },
+      { max: 100, color: "#4caf50", label: "OK" },
+    ],
+
+    // Boolean defaults
+    logic: "or",
+    true_color: "#4caf50",
+    true_label: "On",
+    false_color: "#9e9e9e",
+    false_label: "Off",
+
+    // Graph defaults
+    hours_to_show: 24,
+    graph_type: "sparkline",
+    time_format: "24h",
+
+    // Notes sample (keeps looking good)
+    tabs: [
+      {
+        id: "grocery",
+        name: "Grocery",
+        icon: "mdi:cart",
+        notes: [
+          { id: "1", text: "Milk", completed: false, added: Date.now() - 3 * 86400000 },
+          { id: "2", text: "Eggs", completed: false, added: Date.now() - 86400000 },
+        ],
+      },
+      {
+        id: "errands",
+        name: "Errands",
+        icon: "mdi:run",
+        notes: [
+          { id: "3", text: "Drop off dry cleaning", completed: false, added: Date.now() },
+        ],
+      },
+    ],
+    active_tab: "grocery",
+    show_completed: true,
+    show_dates: true,
+
+    // Keep the private flag for the logo
+    _preview: true,
   };
 }
+
+
+
 
 
   static getConfigElement() {
