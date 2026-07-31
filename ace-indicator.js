@@ -281,8 +281,10 @@ static getStubConfig() {
     if (!this.shadowRoot) return;
 
 
-    // Show the advertisement image in the “By card” grid (and editor preview)
-    if (this._config?._preview || this.preview) {
+       // Show the advertisement image ONLY in the pure “By card” grid.
+    // Once the user opens the configuration dialog the flag is cleared
+    // so the real card layout appears on the right.
+    if (this._config?._preview) {
       this.shadowRoot.innerHTML = `
         <ha-card style="
           overflow: hidden;
@@ -304,6 +306,10 @@ static getStubConfig() {
           />
         </ha-card>
       `;
+
+      // Clear the marker immediately so the editor preview switches
+      // to the real card layout on the next update.
+      delete this._config._preview;
       return;
     }
 
